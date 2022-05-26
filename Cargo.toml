@@ -24,3 +24,5 @@ default = ["heapless/ufmt-impl"]
 codegen-units= 1
 lto = true
 opt-level="z"
+#debug = 0
+#strip = true
