@@ -24,5 +24,6 @@ default = ["heapless/ufmt-impl"]
 codegen-units= 1
 lto = true
 opt-level="z"
+panic= 'abort'
 #debug = 0
 #strip = true

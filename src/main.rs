@@ -3,14 +3,15 @@
 
 use embedded_graphics::mono_font::iso_8859_1::FONT_6X10;
 use embedded_graphics::prelude::{Primitive, Size};
-use embedded_graphics::primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle};
+use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
 use embedded_graphics::{
     mono_font::MonoTextStyle, pixelcolor::BinaryColor, prelude::Point, text::Text, Drawable,
 };
+use gd32vf103xx_hal::gpio::PushPull;
 use gd32vf103xx_hal::pac::Interrupt;
-use heapless::String;
+//use heapless::String;
 extern crate panic_halt;
-use ufmt::uwrite;
+//use ufmt::uwrite;
 #[macro_use(block)]
 extern crate nb;
 
@@ -39,6 +40,12 @@ type Oled = sh1106::mode::GraphicsMode<
 static mut G_TIMER1: Option<Timer<TIMER1>> = None;
 //Time
 static mut TIME: u32 = 0;
+//LEDPWM
+static mut PWM: u8 = 0;
+static mut PWM_TARGET: u8 = 20;
+
+//LED_PIN
+static mut LED_PIN: Option<PB8<Alternate<PushPull>>> = None;
 
 //Zeit überlauf nach ~1193 Stunden
 fn get_millis() -> u32 {
@@ -62,29 +69,60 @@ macro_rules! StaticGuiElement {
             invert: false,
         }
     };
+    ($Px:tt,$Py:tt,$H:tt,$T:tt,$O:tt) => {
+        StaticGuiElement {
+            pos: Point::new($Px + $O, $Py),
+            size: Size::new(u32::try_from($T.chars().count()).unwrap() * 6 + 2, $H),
+            text: $T,
+            invert: false,
+        }
+    };
+    ($Px:expr,$Py:tt,$H:tt,$T:tt) => {
+        StaticGuiElement {
+            pos: Point::new(i32::try_from($Px).unwrap(), $Py),
+            size: Size::new(u32::try_from($T.chars().count()).unwrap() * 6 + 2, $H),
+            text: $T,
+            invert: false,
+        }
+    };
 }
 
-fn draw_gui(disp: &mut Oled, gui_elem: &[StaticGuiElement]) {
+fn draw_gui(disp: &mut Oled, s_gui_elem: &[StaticGuiElement]) {
     //clear display
     disp.clear();
+    //Rechteckfarben
     let rect_style_on = PrimitiveStyleBuilder::new()
         .stroke_color(BinaryColor::On)
         .fill_color(BinaryColor::On)
         .build();
+    let rect_style_off = PrimitiveStyleBuilder::new()
+        .stroke_color(BinaryColor::Off)
+        .fill_color(BinaryColor::Off)
+        .build();
+    //fonts
     let font_off = MonoTextStyle::new(&FONT_6X10, BinaryColor::Off);
-    for s_elem in gui_elem {
+    let font_on = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    //rendering von textblöcken
+    for s_elem in s_gui_elem {
         Rectangle::new(s_elem.pos, s_elem.size)
-            .into_styled(rect_style_on)
+            .into_styled(match s_elem.invert {
+                true => rect_style_on,
+                false => rect_style_off,
+            })
             .draw(disp)
             .unwrap();
         Text::new(
             s_elem.text,
             Point::new(s_elem.pos.x + 1, s_elem.pos.y + 7),
-            font_off,
+            match s_elem.invert {
+                true => font_off,
+                false => font_on,
+            },
         )
         .draw(disp)
         .unwrap();
     }
+
     //flush changes to display
     disp.flush().unwrap();
 }
@@ -116,7 +154,11 @@ fn main() -> ! {
     );
     unsafe { ECLIC::unmask(Interrupt::TIMER1) };
 
-    //setup timer interrupt
+    unsafe {
+        LED_PIN = Some(gpiob.pb8.into_alternate_push_pull());
+    }
+
+    //set up timer interrupt
     let mut _tm1 = gd32vf103xx_hal::timer::Timer::timer1(dp.TIMER1, 1.khz(), &mut rcu);
     _tm1.listen(Event::Update);
     unsafe { G_TIMER1 = Some(_tm1) };
@@ -149,14 +191,26 @@ fn main() -> ! {
 
     disp.init().unwrap();
     disp.flush().unwrap();
-    let tab1 = StaticGuiElement!(0, 0, 9, "ABCDEFGHIJKLMN");
-    let tab2 = StaticGuiElement!(0, 9, 9, "OPQRSTUVWXYZÄÖ");
-    let tab3 = StaticGuiElement!(0, 18, 9, "Üß?!#*+1234567");
-    let tab4 = StaticGuiElement!(0, 27, 9, "890=()[]{}/%$&");
-    let static_gui_elem = [tab1, tab2, tab3, tab4];
+
+    let mut index: usize = 0;
+    let tab1 = StaticGuiElement!(0, 0, 9, "Macro");
+    let tab2 = StaticGuiElement!(tab1.size.width + 5, 0, 9, "DVORAK");
+    let tab3 = StaticGuiElement!(
+        u32::try_from(tab2.pos.x).unwrap() + tab2.size.width + 5,
+        0,
+        9,
+        "Menü"
+    );
+    let mut static_gui_elem = [tab1, tab2, tab3];
     unsafe { riscv::interrupt::enable() };
     loop {
         tm2.start(1.hz());
+        for mut tab in static_gui_elem.as_mut() {
+            tab.invert = false;
+        }
+        static_gui_elem[index].invert = true;
+        index += 1;
+        index %= static_gui_elem.len();
         draw_gui(&mut disp, &static_gui_elem);
         block!(tm2.wait()).unwrap();
     }
@@ -168,7 +222,9 @@ fn TIMER1() {
     if let Some(ref mut timer) = unsafe { &mut G_TIMER1 } {
         timer.clear_update_interrupt_flag();
     }
+    if PWM >= PWM_TARGET {}
     unsafe {
         TIME += 1;
+        PWM += 1;
     }
 }
