@@ -10,3 +10,5 @@ target/riscv32imac-unknown-none-elf/release/keyboard_firmware.bin : target/riscv
 
 flash: target/riscv32imac-unknown-none-elf/release/keyboard_firmware.bin
 	stm32flash -w target/riscv32imac-unknown-none-elf/release/keyboard_firmware.bin -v -g 0x0 /dev/ttyUSB0
+clean:
+	rm -rf target
