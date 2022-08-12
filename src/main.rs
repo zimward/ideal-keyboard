@@ -1,13 +1,14 @@
 #![no_std]
 #![no_main]
 
+use core::num::Wrapping;
 use embedded_graphics::mono_font::iso_8859_1::FONT_6X10;
 use embedded_graphics::prelude::{Primitive, Size};
 use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
 use embedded_graphics::{
     mono_font::MonoTextStyle, pixelcolor::BinaryColor, prelude::Point, text::Text, Drawable,
 };
-use gd32vf103xx_hal::gpio::PushPull;
+use embedded_hal::digital::v2::OutputPin;
 use gd32vf103xx_hal::pac::Interrupt;
 //use heapless::String;
 extern crate panic_halt;
@@ -27,7 +28,11 @@ use gd32vf103xx_hal::{
     prelude::*,
     timer::{Event, Timer},
 };
+use pin_defs::LedPwm;
 use sh1106::{prelude::*, Builder};
+
+mod pin_defs;
+
 //Oled display
 type Oled = sh1106::mode::GraphicsMode<
     I2cInterface<
@@ -41,13 +46,9 @@ static mut G_TIMER1: Option<Timer<TIMER1>> = None;
 //Time
 static mut TIME: u32 = 0;
 //LEDPWM
-static mut PWM: u8 = 0;
-static mut PWM_TARGET: u8 = 20;
+static mut LED_PWM: Option<LedPwm> = None;
 
-//LED_PIN
-static mut LED_PIN: Option<PB8<Alternate<PushPull>>> = None;
-
-//Zeit überlauf nach ~1193 Stunden
+//Zeit überlauf nach ~119,3 Stunden
 fn get_millis() -> u32 {
     //Operation ist sicher, da eine Kopie erstellt wird und eine differenz von 1ms nicht
     //dramatisch ist
@@ -153,13 +154,12 @@ fn main() -> ! {
         Priority::P0,
     );
     unsafe { ECLIC::unmask(Interrupt::TIMER1) };
-
     unsafe {
-        LED_PIN = Some(gpiob.pb8.into_alternate_push_pull());
+        LED_PWM = Some(LedPwm::new(gpiob.pb8, 0));
     }
 
     //set up timer interrupt
-    let mut _tm1 = gd32vf103xx_hal::timer::Timer::timer1(dp.TIMER1, 1.khz(), &mut rcu);
+    let mut _tm1 = gd32vf103xx_hal::timer::Timer::timer1(dp.TIMER1, 10.khz(), &mut rcu);
     _tm1.listen(Event::Update);
     unsafe { G_TIMER1 = Some(_tm1) };
 
@@ -203,6 +203,7 @@ fn main() -> ! {
     );
     let mut static_gui_elem = [tab1, tab2, tab3];
     unsafe { riscv::interrupt::enable() };
+    let mut t: u8 = 0;
     loop {
         tm2.start(1.hz());
         for mut tab in static_gui_elem.as_mut() {
@@ -212,6 +213,10 @@ fn main() -> ! {
         index += 1;
         index %= static_gui_elem.len();
         draw_gui(&mut disp, &static_gui_elem);
+        t = (Wrapping(t) + Wrapping(20u8)).0;
+        unsafe {
+            LED_PWM.as_mut().unwrap().set_threshold(t);
+        }
         block!(tm2.wait()).unwrap();
     }
 }
@@ -222,9 +227,8 @@ fn TIMER1() {
     if let Some(ref mut timer) = unsafe { &mut G_TIMER1 } {
         timer.clear_update_interrupt_flag();
     }
-    if PWM >= PWM_TARGET {}
     unsafe {
-        TIME += 1;
-        PWM += 1;
+        TIME = (Wrapping(TIME) + Wrapping(1u32)).0;
+        LED_PWM.as_mut().unwrap().update();
     }
 }
