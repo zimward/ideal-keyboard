@@ -19,10 +19,10 @@ impl LedPwm {
     }
     pub fn update(&mut self) {
         if self.count == 0 {
-            self.port.set_low();
+            let _ = self.port.set_low();
         }
         if self.count >= self.thresh {
-            self.port.set_high();
+            let _ = self.port.set_high();
         }
         self.count = (Wrapping(self.count) + Wrapping(1u8)).0;
     }
