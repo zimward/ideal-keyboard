@@ -26,4 +26,5 @@ lto = true
 opt-level="z"
 panic= 'abort'
 #debug = 0
-#strip = true
+strip = true
+overflow-checks = false
