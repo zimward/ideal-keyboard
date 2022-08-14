@@ -1,5 +1,5 @@
 use core::num::Wrapping;
-use embedded_hal::digital::v2::{OutputPin, StatefulOutputPin};
+use embedded_hal::digital::v2::OutputPin;
 use gd32vf103xx_hal::gpio::gpiob::PB8;
 use gd32vf103xx_hal::gpio::{Active, Output, PushPull};
 
@@ -18,6 +18,10 @@ impl LedPwm {
         }
     }
     pub fn update(&mut self) {
+        if self.thresh == 255 {
+            self.port.set_low();
+            return;
+        }
         if self.count == 0 {
             let _ = self.port.set_low();
         }
