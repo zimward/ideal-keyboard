@@ -3,6 +3,7 @@ rustflags = [
     "-C", "link-arg=-Tmemory.x",
     "-C", "link-arg=-Tlink.x"
 ]
+runner = "gdb-multiarch --command=debug.gdb"
 
 [build]
 target = "riscv32imac-unknown-none-elf"
