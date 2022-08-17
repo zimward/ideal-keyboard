@@ -1,6 +1,32 @@
 use bitvec::prelude::*;
 use embedded_hal::digital::v2::{InputPin, OutputPin};
 
+pub struct Keyboard<M, const MC: usize>
+where
+    M: ScanableMatrix,
+{
+    matricies: [M; MC],
+    key_buffer: BitArr!(for 192),
+}
+
+impl<M, const MC: usize> Keyboard<M, MC>
+where
+    M: ScanableMatrix,
+{
+    pub fn new(matricies: [M; MC]) -> Self {
+        Self {
+            matricies,
+            key_buffer: bitarr!(usize,Lsb0;0;192), //change to generics once const generics are
+                                                   //stable
+        }
+    }
+    pub fn scan(&mut self) {
+        for matrix in &mut self.matricies {
+            matrix.scan(&mut self.key_buffer);
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! pp_output {
     ($($pin:expr),+) => {
@@ -12,6 +38,10 @@ macro_rules! pd_input {
     ($($pin:expr),+) => {
         [$($pin.into_pull_down_input().downgrade()),+]
     };
+}
+
+pub trait ScanableMatrix {
+    fn scan(&mut self, keybuffer: &mut BitArr!(for 192));
 }
 
 pub struct KeyMatrix<A, D, const AC: usize, const DC: usize>
@@ -36,7 +66,13 @@ where
             offset,
         }
     }
-    pub fn scan(&mut self, keybuffer: &mut BitArr!(for 192)) {
+}
+impl<A, D, const AC: usize, const DC: usize> ScanableMatrix for KeyMatrix<A, D, AC, DC>
+where
+    A: OutputPin,
+    D: InputPin,
+{
+    fn scan(&mut self, keybuffer: &mut BitArr!(for 192)) {
         #[cfg(debug_assertions)]
         {
             assert!(
