@@ -33,7 +33,9 @@ where
     DATA: InputPin<Error = Infallible> + StatefulOutputPin<Error = Infallible>,
     CLOCK: InputPin<Error = Infallible> + StatefulOutputPin<Error = Infallible>,
 {
-    pub fn new(data: DATA, clock: CLOCK) -> Self {
+    pub fn new(mut data: DATA, mut clock: CLOCK) -> Self {
+        let _ = data.set_high();
+        let _ = clock.set_high();
         Self {
             data,
             clock,
@@ -115,7 +117,7 @@ where
                 let expected_parity = self.receive_buffer.count_ones() % 2 == 0;
                 if parity == expected_parity {
                     self.operation = OperatingMode::SendAck;
-                    transmit_buffer.push(self.receive_buffer.as_raw_slice()[0]);
+                    receive_buffer.push(self.receive_buffer.as_raw_slice()[0]);
                 } else {
                     self.operation = OperatingMode::SendNack;
                 }
@@ -133,12 +135,10 @@ where
         &mut self,
         transmit_buffer: &mut ConstGenericRingBuffer<u8, { LEN }>,
     ) -> bool {
-        /*
         if transmit_buffer.is_empty() {
             return false;
         }
-        self.send_buffer.store(transmit_buffer.dequeue().unwrap());*/
-        self.send_buffer.get_mut(0..8).unwrap().store(0b1010_1010);
+        self.send_buffer.store(transmit_buffer.dequeue().unwrap());
         true
     }
     fn send_bit(&mut self) {
