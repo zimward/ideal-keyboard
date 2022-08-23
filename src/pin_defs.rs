@@ -19,7 +19,7 @@ impl LedPwm {
     }
     pub fn update(&mut self) {
         if self.thresh == 255 {
-            self.port.set_low();
+            let _ = self.port.set_low();
             return;
         }
         if self.count == 0 {
