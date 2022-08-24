@@ -49,9 +49,20 @@ where
                     return;
                 }
                 if *val.get(0).unwrap() {
-                    self.scancode_buffer.push(SCANCODE_LOOKUP[key][0]);
+                    for code in SCANCODE_LOOKUP[key] {
+                        self.scancode_buffer.push(*code);
+                    }
                     sprintln!("Key {} pressed", key);
                 } else {
+                    if SCANCODE_LOOKUP[key].len() > 1 {
+                        //Extended code
+                        self.scancode_buffer.push(0xE0);
+                        self.scancode_buffer.push(0xF0);
+                        for code in &SCANCODE_LOOKUP[key][1..] {
+                            self.scancode_buffer.push(*code);
+                        }
+                    } else {
+                    }
                     self.scancode_buffer.push(0xF0); //break code
                     self.scancode_buffer.push(SCANCODE_LOOKUP[key][0]);
                     sprintln!("Key {} released", key);
