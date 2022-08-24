@@ -46,7 +46,7 @@ where
             if *val.get(1).unwrap() {
                 let key = i / 2;
                 if key >= SCANCODE_LOOKUP.len() {
-                    return;
+                    continue;
                 }
                 if *val.get(0).unwrap() {
                     for code in SCANCODE_LOOKUP[key] {
