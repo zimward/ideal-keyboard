@@ -3,7 +3,7 @@ use crate::{keyboard_layouts::SCANCODE_LOOKUP, sprintln};
 use bitvec::prelude::*;
 use core::convert::Infallible;
 use embedded_hal::digital::v2::{InputPin, OutputPin, StatefulOutputPin};
-use ringbuffer::{ConstGenericRingBuffer, RingBufferWrite};
+use ringbuffer::{ConstGenericRingBuffer, RingBuffer, RingBufferRead, RingBufferWrite};
 use riscv::asm::delay;
 
 pub struct Keyboard<M, const MC: usize, Ps2Data, Ps2Clock>
@@ -17,6 +17,7 @@ where
     key_buffer: BitArr!(for 192),
     scancode_buffer: ConstGenericRingBuffer<u8, 32>,
     command_buffer: ConstGenericRingBuffer<u8, 32>,
+    enabled_scanning: bool,
 }
 
 impl<M, const MC: usize, Ps2Data, Ps2Clock> Keyboard<M, MC, Ps2Data, Ps2Clock>
@@ -26,20 +27,68 @@ where
     Ps2Clock: InputPin<Error = Infallible> + StatefulOutputPin<Error = Infallible>,
 {
     pub fn new(matricies: [M; MC], ps2_data: Ps2Data, ps2_clock: Ps2Clock) -> Self {
-        Self {
+        let mut kb = Self {
             matricies,
             key_buffer: bitarr!(usize,Lsb0;0;192),
             scancode_buffer: ConstGenericRingBuffer::new(),
             command_buffer: ConstGenericRingBuffer::new(),
             ps2_interface: PS2::new(ps2_data, ps2_clock),
-        }
+            enabled_scanning: false,
+        };
+        kb.scancode_buffer.push(0xAA);
+        kb
     }
     pub fn scan(&mut self) {
         for matrix in &mut self.matricies {
             matrix.scan(&mut self.key_buffer);
         }
     }
+    fn send_ack(&mut self) {
+        self.scancode_buffer.push(0xFA);
+    }
     pub fn process_keystrokes(&mut self) {
+        if !self.command_buffer.is_empty() {
+            let command = self.command_buffer.dequeue().unwrap();
+            sprintln!("Received {:#02x}", command);
+            match command {
+                0xFF => {
+                    self.send_ack();
+                    self.scancode_buffer.push(0xAA);
+                }
+                0xFE => {
+                    self.send_ack();
+                }
+                0xF5 => {
+                    self.enabled_scanning = false;
+                    self.send_ack();
+                }
+                0xF4 => {
+                    self.enabled_scanning = true;
+                    self.send_ack();
+                }
+                0xF3 => {
+                    self.send_ack();
+                }
+                0xF2 => {
+                    self.send_ack();
+                    self.scancode_buffer.push(0xAB);
+                    self.scancode_buffer.push(0x83);
+                }
+                0xF0 => {
+                    self.send_ack();
+                }
+                0xEE => {
+                    self.scancode_buffer.push(0xEE);
+                }
+                0xED => {
+                    self.send_ack();
+                }
+                _ => {
+                    self.send_ack();
+                }
+            }
+        }
+        //        if self.enabled_scanning {
         for i in (0..self.key_buffer.len()).step_by(2) {
             let val = self.key_buffer.get_mut(i..=i + 1).unwrap();
             // read change bit
@@ -49,26 +98,27 @@ where
                     continue;
                 }
                 if *val.get(0).unwrap() {
+                    sprintln!("Key {} pressed", key);
                     for code in SCANCODE_LOOKUP[key] {
                         self.scancode_buffer.push(*code);
                     }
-                    sprintln!("Key {} pressed", key);
-                } else {
-                    if SCANCODE_LOOKUP[key].len() > 1 {
-                        //Extended code
-                        self.scancode_buffer.push(0xE0);
-                        self.scancode_buffer.push(0xF0);
-                        for code in &SCANCODE_LOOKUP[key][1..] {
-                            self.scancode_buffer.push(*code);
-                        }
-                    } else {
-                    }
+                } else if SCANCODE_LOOKUP[key].len() == 1 {
                     self.scancode_buffer.push(0xF0); //break code
                     self.scancode_buffer.push(SCANCODE_LOOKUP[key][0]);
                     sprintln!("Key {} released", key);
+                } else {
+                    //Extended code
+                    self.scancode_buffer.push(0xE0);
+                    self.scancode_buffer.push(0xF0);
+                    for code in &SCANCODE_LOOKUP[key][1..] {
+                        self.scancode_buffer.push(*code);
+                    }
+                    sprintln!("Key {} released", key);
                 }
+
                 val.set(1, false);
             }
+            //          }
         }
     }
     pub fn update_interface(&mut self) {
