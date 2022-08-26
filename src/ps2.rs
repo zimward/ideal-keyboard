@@ -5,6 +5,7 @@ use bitvec::prelude::*;
 use embedded_hal::digital::v2::{InputPin, StatefulOutputPin};
 use ringbuffer::{ConstGenericRingBuffer, RingBuffer, RingBufferRead, RingBufferWrite};
 
+#[derive(PartialEq)]
 enum OperatingMode {
     Idle,
     Transmit,
@@ -26,6 +27,7 @@ where
     send_buffer: BitArr!(for 8,in u8,Lsb0),
     receive_buffer: BitArr!(for 8,in u8,Lsb0),
     current_bit: usize,
+    parity: u8,
     operation: OperatingMode,
 }
 impl<DATA, CLOCK> PS2<DATA, CLOCK>
@@ -40,8 +42,9 @@ where
             data,
             clock,
             send_buffer: bitarr!(u8,Lsb0;0;8),
-            receive_buffer: bitarr!(u8,Lsb0;0,8),
+            receive_buffer: bitarr!(u8,Lsb0;0;8),
             current_bit: 0,
+            parity: 1,
             operation: OperatingMode::Idle,
         }
     }
@@ -50,85 +53,73 @@ where
         transmit_buffer: &mut ConstGenericRingBuffer<u8, { LEN }>,
         receive_buffer: &mut ConstGenericRingBuffer<u8, { LEN }>,
     ) {
-        //const_assert_ne!(transmit_buffer.len(), 0);
-        //reset clock and check for host transmission
         if self.clock.is_set_low().unwrap() {
             let _ = self.clock.set_high();
-            return; //wait till next clock
-        }
-        if self.clock.is_low().unwrap() {
-            //Host is going to transmit
-            let _ = self.data.set_high(); //release data
-            self.operation = OperatingMode::ReceiveStart;
-        }
-        match &self.operation {
-            OperatingMode::Idle => {
-                //Load next scancode if present
-                //send start code after successful load
-                if !self.load_scancodes(transmit_buffer) {
-                    return;
+            match &self.operation {
+                OperatingMode::Transmit => {
+                    self.send_bit();
                 }
-                self.operation = OperatingMode::Transmit;
-                //Transmit Start bit
-                let _ = self.data.set_low();
-                let _ = self.clock.set_low();
-            }
-            OperatingMode::Transmit => {
-                self.send_bit();
-            }
-            OperatingMode::SendParity => {
-                let current_byte = self
-                    .send_buffer
-                    .get(self.current_bit - 8..self.current_bit)
-                    .unwrap();
-                let parity = current_byte.count_ones() % 2 == 0;
-                if parity {
-                    let _ = self.data.set_high();
-                } else {
-                    let _ = self.data.set_low();
-                }
-                self.operation = OperatingMode::SendStop;
-                let _ = self.clock.set_low();
-            }
-            OperatingMode::SendStop => {
-                let _ = self.data.set_high();
-                let _ = self.clock.set_low();
-                if self.current_bit == 8 {
-                    self.operation = OperatingMode::Idle;
-                    self.current_bit = 0;
-                }
-            }
-            OperatingMode::ReceiveStart => {
-                if self.data.is_low().unwrap() {
-                    if self.clock.is_high().unwrap() {
-                        self.operation = OperatingMode::Receive;
-                        let _ = self.clock.set_low();
-                        self.current_bit = 0;
+                OperatingMode::SendParity => {
+                    if self.parity == 1 {
+                        let _ = self.data.set_high();
+                    } else {
+                        let _ = self.data.set_low();
                     }
-                } else {
+                    self.operation = OperatingMode::SendStop;
+                }
+                OperatingMode::SendStop => {
+                    let _ = self.data.set_high();
+                }
+                _ => {}
+            }
+        } else if self.clock.is_low().unwrap() {
+            //host is going to transmit
+            let _ = self.data.set_high(); //release data line
+            self.operation = OperatingMode::ReceiveStart;
+        } else if self.operation != OperatingMode::Idle {
+            match self.operation {
+                OperatingMode::SendStop => {
                     self.operation = OperatingMode::Idle;
                 }
-            }
-            OperatingMode::Receive => {
-                self.receive_bit();
-            }
-            OperatingMode::ReceiveParity => {
-                let parity = self.data.is_high().unwrap();
-                let expected_parity = self.receive_buffer.count_ones() % 2 == 0;
-                if parity == expected_parity {
-                    self.operation = OperatingMode::SendAck;
-                    receive_buffer.push(self.receive_buffer.as_raw_slice()[0]);
-                } else {
-                    self.operation = OperatingMode::SendNack;
+                OperatingMode::ReceiveStart => {
+                    if self.data.is_low().unwrap() {
+                        self.operation = OperatingMode::Receive;
+                        self.current_bit = 0;
+                    } else {
+                        self.operation = OperatingMode::Idle;
+                    }
                 }
-                let _ = self.clock.set_low();
+                OperatingMode::Receive => {
+                    self.receive_bit();
+                }
+                OperatingMode::ReceiveParity => {
+                    let parity = self.data.is_high().unwrap();
+                    let expected_parity = self.receive_buffer.count_ones() % 2 == 0;
+                    if parity == expected_parity {
+                        self.operation = OperatingMode::SendAck;
+                        receive_buffer.push(self.receive_buffer.as_raw_slice()[0]);
+                    } else {
+                        self.operation = OperatingMode::SendNack;
+                    }
+                }
+                OperatingMode::SendAck => {
+                    let _ = self.data.set_low();
+                    self.operation = OperatingMode::Idle;
+                }
+                OperatingMode::SendNack => {
+                    let _ = self.data.set_high();
+                    self.operation = OperatingMode::ReceiveStart;
+                }
+                _ => {}
             }
-            OperatingMode::SendAck => {
-                self.send_ack(true);
-            }
-            OperatingMode::SendNack => {
-                self.send_ack(false);
-            }
+            let _ = self.clock.set_low(); //generate falling edge
+                                          //causing data to be read
+        } else if self.load_scancodes(transmit_buffer) {
+            let _ = self.data.set_low();
+            let _ = self.clock.set_low();
+            self.operation = OperatingMode::Transmit;
+            self.current_bit = 0;
+            self.parity = 1;
         }
     }
     fn load_scancodes<const LEN: usize>(
@@ -145,14 +136,14 @@ where
         let bit = self.send_buffer.get(self.current_bit).unwrap();
         if *bit {
             let _ = self.data.set_high();
+            self.parity ^= 1;
         } else {
             let _ = self.data.set_low();
         }
         self.current_bit += 1;
-        if self.current_bit % 8 == 0 {
+        if self.current_bit == 8 {
             self.operation = OperatingMode::SendParity;
         }
-        let _ = self.clock.set_low();
     }
     fn receive_bit(&mut self) {
         if self.data.is_high().unwrap() {
@@ -160,21 +151,9 @@ where
         } else {
             self.receive_buffer.set(self.current_bit, false);
         }
-        let _ = self.clock.set_low();
         self.current_bit += 1;
         if self.current_bit == 8 {
             self.operation = OperatingMode::ReceiveParity;
         }
-    }
-    fn send_ack(&mut self, ack: bool) {
-        if ack {
-            let _ = self.data.set_low();
-            self.operation = OperatingMode::Idle;
-        } else {
-            let _ = self.data.set_high();
-            self.current_bit = 0;
-            self.operation = OperatingMode::Receive;
-        }
-        let _ = self.clock.set_low();
     }
 }
