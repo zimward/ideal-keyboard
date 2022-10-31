@@ -8,10 +8,12 @@ use ringbuffer::{ConstGenericRingBuffer, RingBuffer, RingBufferRead, RingBufferW
 #[derive(PartialEq)]
 enum OperatingMode {
     Idle,
+    SendStart,
     Transmit,
-    SendParity,
     SendStop,
-    ReceiveStart,
+    SendStopEnd,
+    Wait,
+    ComInihibited,
     Receive,
     ReceiveParity,
     SendAck,
@@ -53,49 +55,50 @@ where
         transmit_buffer: &mut ConstGenericRingBuffer<u8, { LEN }>,
         receive_buffer: &mut ConstGenericRingBuffer<u8, { LEN }>,
     ) {
-        if self.clock.is_set_low().unwrap() {
-            let _ = self.clock.set_high();
-            match &self.operation {
+        if self.clock.is_high().unwrap() && self.operation != OperatingMode::Idle {
+            match self.operation {
+                //Transmission
+                OperatingMode::SendStart => {
+                    // The Start condition needs the Data line to be low
+                    // one clock before the clock goes low
+                    self.operation = OperatingMode::Transmit;
+                }
                 OperatingMode::Transmit => {
                     self.send_bit();
                 }
-                OperatingMode::SendParity => {
-                    if self.parity == 1 {
-                        let _ = self.data.set_high();
-                    } else {
-                        let _ = self.data.set_low();
-                    }
-                    self.operation = OperatingMode::SendStop;
-                }
                 OperatingMode::SendStop => {
                     let _ = self.data.set_high();
+                    self.operation = OperatingMode::SendStopEnd;
                 }
-                _ => {}
-            }
-        } else if self.clock.is_low().unwrap() {
-            //host is going to transmit
-            let _ = self.data.set_high(); //release data line
-            self.operation = OperatingMode::ReceiveStart;
-        } else if self.operation != OperatingMode::Idle {
-            match self.operation {
-                OperatingMode::SendStop => {
-                    self.operation = OperatingMode::Idle;
+                OperatingMode::SendStopEnd => {
+                    self.operation = OperatingMode::Wait; // Generate final edge
                 }
-                OperatingMode::ReceiveStart => {
-                    if self.data.is_low().unwrap() {
+                OperatingMode::Wait => {
+                    self.current_bit += 1;
+                    if self.current_bit > 4 {
+                        self.operation = OperatingMode::Idle;
+                    }
+                    return;
+                }
+                //Receive
+                OperatingMode::ComInihibited => {
+                    //Host is still inhibiting communication
+                    if self.data.is_low().unwrap() && self.data.is_set_high().unwrap() {
                         self.operation = OperatingMode::Receive;
+                        self.parity = 1;
                         self.current_bit = 0;
                     } else {
                         self.operation = OperatingMode::Idle;
+                        let _ = self.data.set_high();
+                        let _ = self.clock.set_high();
+                        return;
                     }
                 }
                 OperatingMode::Receive => {
                     self.receive_bit();
                 }
                 OperatingMode::ReceiveParity => {
-                    let parity = self.data.is_high().unwrap();
-                    let expected_parity = self.receive_buffer.count_ones() % 2 == 0;
-                    if parity == expected_parity {
+                    if (self.parity == 1) == self.data.is_high().unwrap() {
                         self.operation = OperatingMode::SendAck;
                         receive_buffer.push(self.receive_buffer.as_raw_slice()[0]);
                     } else {
@@ -108,18 +111,22 @@ where
                 }
                 OperatingMode::SendNack => {
                     let _ = self.data.set_high();
-                    self.operation = OperatingMode::ReceiveStart;
+                    self.operation = OperatingMode::Idle;
                 }
                 _ => {}
             }
-            let _ = self.clock.set_low(); //generate falling edge
-                                          //causing data to be read
-        } else if self.load_scancodes(transmit_buffer) {
-            let _ = self.data.set_low();
+            //Generate falling edge, causing data read
             let _ = self.clock.set_low();
-            self.operation = OperatingMode::Transmit;
-            self.current_bit = 0;
-            self.parity = 1;
+        } else if self.clock.is_low().unwrap() {
+            self.operation = OperatingMode::ComInihibited;
+            let _ = self.data.set_high();
+        } else {
+            let _ = self.clock.set_high();
+            let _ = self.data.set_high();
+        }
+        if self.operation == OperatingMode::Idle && self.load_scancodes(transmit_buffer) {
+            self.operation = OperatingMode::SendStart;
+            let _ = self.data.set_low();
         }
     }
     fn load_scancodes<const LEN: usize>(
@@ -130,9 +137,22 @@ where
             return false;
         }
         self.send_buffer.store(transmit_buffer.dequeue().unwrap());
+        self.parity = 1;
+        self.current_bit = 0;
         true
     }
     fn send_bit(&mut self) {
+        // send parity
+        if self.current_bit == 8 {
+            if self.parity == 1 {
+                let _ = self.data.set_high();
+            } else {
+                let _ = self.data.set_low();
+            }
+            self.operation = OperatingMode::SendStop;
+            return;
+        }
+        //send data bit and compute odd parity
         let bit = self.send_buffer.get(self.current_bit).unwrap();
         if *bit {
             let _ = self.data.set_high();
@@ -141,12 +161,10 @@ where
             let _ = self.data.set_low();
         }
         self.current_bit += 1;
-        if self.current_bit == 8 {
-            self.operation = OperatingMode::SendParity;
-        }
     }
     fn receive_bit(&mut self) {
         if self.data.is_high().unwrap() {
+            self.parity ^= 1;
             self.receive_buffer.set(self.current_bit, true);
         } else {
             self.receive_buffer.set(self.current_bit, false);
